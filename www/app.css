@@ -131,3 +131,8 @@ img.th{width:36px;height:27px;object-fit:cover;border-radius:5px;margin-right:6p
 .rq{border-left:6px solid #ccc}
 .rq.g{border-left-color:var(--green)}.rq.r{border-left-color:var(--red)}
 .rq .qq{font-weight:800;margin:2px 0 6px}
+.scanov{position:fixed;inset:0;z-index:90;background:rgba(8,24,15,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:20px;color:#fff;text-align:center}
+.scanbox{position:relative;width:min(80vw,340px);aspect-ratio:1;border-radius:18px;overflow:hidden;background:#000}
+.scanbox video{width:100%;height:100%;object-fit:cover}
+.scanbox i{position:absolute;inset:12%;border:4px solid var(--gold);border-radius:14px;box-shadow:0 0 0 999px rgba(0,0,0,.35)}
+.scanov .btn{max-width:340px}

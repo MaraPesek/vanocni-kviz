@@ -346,7 +346,9 @@ function hostView() {
 
 function playerJoinView() {
   return `<div class="snow"></div>` + bar("📷 Připojit se") + `<div class="body">
-  <div class="card center"><div class="big">📱</div><b>Naskenuj QR kód</b><p class="muted" style="margin:6px 0 0">z telefonu pořadatele foťákem. Otevře se ti kvíz s už vyplněným kódem.</p></div>
+  <div class="card center"><div class="big">📱</div><b>Naskenuj QR kód z telefonu pořadatele</b>
+   <button class="btn" id="scan" style="margin-top:10px">📷 Naskenovat QR kód</button>
+   <p class="muted" style="margin:8px 0 0;font-size:13px">Jde to i obyčejným foťákem v telefonu, otevře se kvíz s vyplněným kódem.</p></div>
   <div><label>nebo opiš kód kvízu</label><input class="codein" id="joinCode" placeholder="KVIZ-____" maxlength="11" value="${esc(L.codeDraft || "")}" autocomplete="off"></div>
   <div class="err">${esc(L.err || "")}</div>
   <details class="take" ${L.takeOpen ? "open" : ""}><summary>Vybil se telefon pořadatele?</summary>
@@ -478,6 +480,7 @@ document.addEventListener("click", async e => {
   const id = t.id, ds = t.dataset;
 
   if (ds.back) {
+    if (scanStop) scanStop();
     if (ds.back === "home" && (L.view === "host" || L.view === "player")) leaveQuiz();
     return go(ds.back);
   }
@@ -486,6 +489,7 @@ document.addEventListener("click", async e => {
   // úvod
   if (id === "mHost") return go("host-create");
   if (id === "mPlay") { L.codeDraft = ""; return go("player-join"); }
+  if (id === "scan") return startScan();
   if (id === "resumeHost") { L.isHost = true; L.view = "host"; watch(store.get("host")); return render(); }
   if (id === "resumePlay") { const p = store.get("player"); L.isHost = false; L.tid = p.tid; L.view = "player"; watch(p.code); return render(); }
 
@@ -569,6 +573,56 @@ document.addEventListener("click", async e => {
     return render();
   }
 });
+/* ---------- čtečka QR kódu ---------- */
+let scanStop = null;
+function loadJsQR() {
+  if (window.jsQR) return Promise.resolve();
+  return new Promise((res, rej) => { const sc = document.createElement("script"); sc.src = "jsqr.js"; sc.onload = res; sc.onerror = rej; document.head.appendChild(sc); });
+}
+function codeFrom(text) {
+  try { const k = new URL(text).searchParams.get("k"); if (k) return k.toUpperCase(); } catch {}
+  const m = String(text).toUpperCase().match(/KVIZ-[A-Z0-9]+/); return m ? m[0] : null;
+}
+async function startScan() {
+  const ov = document.createElement("div"); ov.className = "scanov";
+  ov.innerHTML = `<div class="scanbox"><video playsinline muted></video><i></i></div><p>Namiř foťák na QR kód na telefonu pořadatele</p><button class="btn sec" id="scanX">Zrušit</button>`;
+  document.body.appendChild(ov);
+  const video = ov.querySelector("video");
+  let stream, raf, alive = true;
+  const stop = () => { alive = false; cancelAnimationFrame(raf); if (stream) stream.getTracks().forEach(t => t.stop()); ov.remove(); scanStop = null; };
+  scanStop = stop; ov.querySelector("#scanX").onclick = stop;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+    if (!alive) return stream.getTracks().forEach(t => t.stop());
+    video.srcObject = stream; await video.play();
+  } catch { stop(); alertBox("Foťák se nepodařilo spustit. Povol přístup ke kameře, nebo opiš kód."); return; }
+  const det = "BarcodeDetector" in window ? new BarcodeDetector({ formats: ["qr_code"] }) : null;
+  if (!det) { try { await loadJsQR(); } catch { stop(); alertBox("Čtečku se nepodařilo načíst. Opiš kód."); return; } }
+  const cv = document.createElement("canvas"), cx = cv.getContext("2d", { willReadFrequently: true });
+  let busy = false;
+  const found = txt => {
+    const c = codeFrom(txt); if (!c) return false;
+    stop(); L.codeDraft = c; L.err = ""; render(); $("#go")?.click(); return true;
+  };
+  const tick = async () => {
+    if (!alive) return;
+    if (!busy && video.readyState >= 2) {
+      busy = true;
+      try {
+        if (det) { const r = await det.detect(video); if (r[0] && found(r[0].rawValue)) return; }
+        else {
+          const w = 480, h = Math.round(w * video.videoHeight / video.videoWidth) || 360; cv.width = w; cv.height = h;
+          cx.drawImage(video, 0, 0, w, h); const r = jsQR(cx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: "dontInvert" });
+          if (r && found(r.data)) return;
+        }
+      } catch {}
+      busy = false;
+    }
+    raf = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
 function alertBox(msg) { const d = document.createElement("div"); d.className = "toast"; d.textContent = msg; document.body.appendChild(d); setTimeout(() => d.remove(), 4000); }
 
 /* ---------- start ---------- */

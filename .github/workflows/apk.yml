@@ -19,6 +19,8 @@ jobs:
           npm install
           npx cap add android
           npx cap sync android
+      - name: Povolit foťák (čtečka QR kódu)
+        run: sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.CAMERA" />#' android/app/src/main/AndroidManifest.xml && grep -n permission android/app/src/main/AndroidManifest.xml
       - name: Ikona aplikace
         run: |
           rm -rf android/app/src/main/res/mipmap-anydpi-v26

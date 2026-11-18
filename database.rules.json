@@ -1,0 +1,8 @@
+{
+  "rules": {
+    "quizzes": {
+      ".read": true,
+      "$code": { ".write": true }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "appId": "cz.selmy.vanocnikviz",
+  "appName": "Vánoční kvíz",
+  "webDir": "www",
+  "android": { "allowMixedContent": false }
+}

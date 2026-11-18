@@ -14,19 +14,19 @@ function photo(e, c1, c2, t) {
 
 // OKRUHY: každý okruh má název a svoje otázky. Pořadí okruhů i otázek = pořadí v kvízu.
 export const ROUNDS = [
-  { name: "🎄 Vánoce", questions: [
-    { cat: "🎄 Vánoce", q: "Kolik svíček je na adventním věnci?", a: ["2", "3", "4", "5"], ok: 2 },
+  { name: "🧚 Vánoční pohádky", questions: [
     { cat: "🦌 Pohádky", q: "Jak se jmenuje sob se svítícím červeným nosem?", a: ["Rudolf", "Kometa", "Blesk", "Tanečník"], ok: 0 },
     { type: "text", cat: "✍️ Napiš odpověď", q: "Kdo nosí dárky dětem v Rusku?", acc: ["Děda Mráz", "Ded Moroz", "Dědeček Mráz"] },
   ] },
-  { name: "🖼️ Obrázky", questions: [
-    { cat: "🖼️ Obrázková otázka", q: "Co je na obrázku (zvětšený detail)?", img: photo("🌟", "#f9a825", "#fff8e1", "").img, a: ["Hvězda na špičce stromku", "Prskavka", "Sluníčko", "Sněhová vločka"], ok: 0 },
+  { name: "🎄 Vánoční tradice", questions: [
+    { cat: "🕯️ Advent", q: "Kolik svíček je na adventním věnci?", a: ["2", "3", "4", "5"], ok: 2 },
+    { cat: "🎵 Poznej koledu", q: "Z jaké písničky je tahle melodie?", audio: "tune:jingle", a: ["Rolničky, rolničky", "Tichá noc", "Nesem vám noviny", "Purpura"], ok: 0 },
     { cat: "📸 Foto otázka", q: "Na které fotce je perníková chaloupka?", a: [photo("🎄", "#2e7d32", "#a5d6a7", "Stromek"), photo("🏠", "#a0582a", "#ffe0b2", "Chaloupka"), photo("☃️", "#1e88e5", "#e3f2fd", "Sněhulák"), photo("🎁", "#c62828", "#ffcdd2", "Dárek")], ok: 1 },
   ] },
-  { name: "🎵 Hudba", questions: [
-    { cat: "🎵 Poznej písničku", q: "Z jaké písničky je tahle melodie?", audio: "tune:jingle", a: ["Rolničky, rolničky", "Tichá noc", "Nesem vám noviny", "Purpura"], ok: 0 },
-  ] },
-  { name: "🔢 Hádej číslo", questions: [
+  { name: "🏛️ Znáš stavební úřad?", questions: [
     { type: "num", cat: "🎂 Hádej rok", q: "Ve kterém roce se narodila Monika? (ukázka, rok je vymyšlený)", num: 1990, tol: 2 },
+  ] },
+  { name: "🌍 Všeobecný přehled", questions: [
+    { cat: "🖼️ Obrázková otázka", q: "Co je na obrázku (zvětšený detail)?", img: photo("🌟", "#f9a825", "#fff8e1", "").img, a: ["Hvězda na špičce stromku", "Prskavka", "Sluníčko", "Sněhová vločka"], ok: 0 },
   ] },
 ];

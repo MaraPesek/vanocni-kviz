@@ -2,5 +2,9 @@
   "appId": "cz.selmy.vanocnikviz",
   "appName": "Vánoční kvíz",
   "webDir": "www",
+  "server": {
+    "url": "https://marapesek.github.io/vanocni-kviz/",
+    "allowNavigation": ["marapesek.github.io"]
+  },
   "android": { "allowMixedContent": false }
 }

@@ -9,7 +9,7 @@ Pořadatel založí kvíz v Android aplikaci a ukáže QR kód. Týmy ho naskenu
 - `www/` – celá aplikace (stejná pro pořadatele i hráče).
 - `www/questions.js` – připravené otázky.
 - `www/config.js` – připojení k Firebase a adresa stránky pro hráče.
-- Po každé změně se automaticky sestaví nové APK a aktualizuje stránka pro hráče (GitHub Actions).
+- Aplikace pro pořadatele načítá obsah ze stránky pro hráče, takže změny se do ní dostanou samy (do ~10 minut, stačí aplikaci zavřít a otevřít). Nové APK je potřeba jen při změně ikony, názvu nebo oprávnění.
 
 ## Firebase
 Realtime Database, pravidla viz `database.rules.json` (zkopírovat do Firebase → Realtime Database → Rules).

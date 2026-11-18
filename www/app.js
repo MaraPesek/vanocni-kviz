@@ -1,6 +1,7 @@
 import { openDb } from "./db.js";
 import { ROUNDS } from "./questions.js";
 import { PLAYER_URL } from "./config.js";
+import { BUILT } from "./version.js";
 
 /* ---------- pomocné ---------- */
 const $ = s => document.querySelector(s);
@@ -212,7 +213,8 @@ function homeView() {
   <button class="btn hbig red" id="mPlay"><span>🎁</span>Připojit se<small>Přihlásím tým a hrajeme</small></button>
   ${h ? `<button class="btn sec" id="resumeHost">↩ Pokračovat v řízení kvízu ${esc(h)}</button>` : ""}
   ${p ? `<button class="btn sec" id="resumePlay">↩ Vrátit se do kvízu ${esc(p.code)}</button>` : ""}
-  ${db.mode === "local" ? `<div class="muted center" style="font-size:12px">Zkušební režim bez internetu: funguje jen mezi okny tohoto prohlížeče.</div>` : ""}</div>`;
+  ${db.mode === "local" ? `<div class="muted center" style="font-size:12px">Zkušební režim bez internetu: funguje jen mezi okny tohoto prohlížeče.</div>` : ""}</div>
+  <button class="upd ${L.newer ? "new" : ""}" id="upd">${L.updating ? "⏳ Aktualizuji…" : L.newer ? "🔔 Je k dispozici nová verze, ťukni pro aktualizaci" : "🔄 Aktualizovat"}<small>Poslední aktualizace: ${fmtBuilt(BUILT)}</small></button>`;
 }
 
 function hostCreateView() {
@@ -490,6 +492,7 @@ document.addEventListener("click", async e => {
   if (id === "mHost") return go("host-create");
   if (id === "mPlay") { L.codeDraft = ""; return go("player-join"); }
   if (id === "scan") return startScan();
+  if (id === "upd") return doUpdate();
   if (id === "resumeHost") { L.isHost = true; L.view = "host"; watch(store.get("host")); return render(); }
   if (id === "resumePlay") { const p = store.get("player"); L.isHost = false; L.tid = p.tid; L.view = "player"; watch(p.code); return render(); }
 
@@ -573,6 +576,28 @@ document.addEventListener("click", async e => {
     return render();
   }
 });
+/* ---------- aktualizace ---------- */
+const FILES = ["./", "index.html", "app.js", "app.css", "db.js", "config.js", "questions.js", "version.js", "qrcode.js", "jsqr.js"];
+function fmtBuilt(b) {
+  if (!b) return "vývojová verze";
+  const d = new Date(b);
+  return d.toLocaleDateString("cs-CZ", { day: "numeric", month: "numeric", year: "numeric" }) + " v " + d.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" });
+}
+async function latestBuilt() {
+  const r = await fetch("version.json?t=" + Date.now(), { cache: "no-store" });
+  if (!r.ok) throw new Error("x"); return (await r.json()).built;
+}
+async function checkUpdate() { try { const b = await latestBuilt(); L.newer = !!(b && BUILT && b !== BUILT); if (L.view === "home") render(); } catch {} }
+async function doUpdate() {
+  if (L.updating) return; L.updating = true; render();
+  try {
+    const b = await latestBuilt();
+    if (b && b === BUILT) { L.updating = false; L.newer = false; render(); return alertBox("✅ Máš nejnovější verzi."); }
+    await Promise.all(FILES.map(f => fetch(f, { cache: "reload" }).catch(() => {})));
+    location.reload();
+  } catch { L.updating = false; render(); alertBox("Aktualizace se nepodařila. Zkontroluj internet."); }
+}
+
 /* ---------- čtečka QR kódu ---------- */
 let scanStop = null;
 function loadJsQR() {
@@ -637,4 +662,5 @@ function alertBox(msg) { const d = document.createElement("div"); d.className = 
     else { L.codeDraft = k.toUpperCase(); L.view = "player-join"; render(); $("#go")?.click(); return; }
   }
   render();
+  checkUpdate();
 })();

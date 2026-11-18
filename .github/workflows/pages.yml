@@ -14,6 +14,11 @@ jobs:
     environment: { name: github-pages, url: "${{ steps.d.outputs.page_url }}" }
     steps:
       - uses: actions/checkout@v5
+      - name: Zapsat čas aktualizace
+        run: |
+          T=$(git log -1 --format=%cI)
+          echo "export const BUILT = \"$T\";" > www/version.js
+          echo "{\"built\": \"$T\"}" > www/version.json
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with: { path: www }

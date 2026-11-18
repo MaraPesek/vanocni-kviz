@@ -1,5 +1,5 @@
 import { openDb } from "./db.js";
-import { QUESTIONS } from "./questions.js";
+import { ROUNDS } from "./questions.js";
 import { PLAYER_URL } from "./config.js";
 
 /* ---------- pomocné ---------- */
@@ -57,7 +57,22 @@ let quizName = store.get("name") || "Vánoční kvíz";
 let TIME = store.get("time") ?? 30;
 let online = true;
 
-const questions = () => (Q && Q.questions) || [...QUESTIONS, ...extra];
+function buildQuiz() {
+  const names = ROUNDS.map(r => r.name);
+  extra.forEach(q => { if (q.round && !names.includes(q.round)) names.push(q.round); });
+  const qs = [], rounds = [];
+  names.forEach(n => {
+    const base = ((ROUNDS.find(r => r.name === n) || {}).questions || []).map(q => ({ ...q, round: n }));
+    const ex = extra.map((q, ei) => ({ ...q, ei })).filter(q => (q.round || names[0]) === n);
+    const all = [...base, ...ex]; if (!all.length) return;
+    rounds.push({ name: n, start: qs.length, count: all.length }); qs.push(...all);
+  });
+  return { qs, rounds };
+}
+const questions = () => (Q && Q.questions) || buildQuiz().qs;
+const rounds = () => (Q && Q.rounds) || buildQuiz().rounds;
+const roundOf = i => rounds().findIndex(r => i >= r.start && i < r.start + r.count);
+const GAP = 3000;
 const teams = () => Object.entries((Q && Q.teams) || {}).filter(([, t]) => !t.kicked);
 const answersOf = i => (Q && Q.answers && Q.answers[qk(i)]) || {};
 const resultsOf = i => (Q && Q.results && Q.results[qk(i)]) || null;
@@ -76,11 +91,15 @@ function ranking() {
   return teams().map(([id, t]) => ({ id, name: t.name, members: t.members || [], s: sc[id], t: tm[id] })).sort((a, b) => b.s - a.s || a.t - b.t);
 }
 function timeLeft() {
-  if (!Q || !Q.time || Q.state !== "question") return null;
-  return Math.max(0, Math.ceil((Q.qStart + Q.time * 1000 - db.now()) / 1000));
+  if (!Q || !Q.qEnd || Q.state !== "question") return null;
+  return Math.max(0, Math.ceil((Q.qEnd - db.now()) / 1000));
 }
+const inGap = () => !!(Q && Q.state === "question" && Q.qEnd && db.now() >= Q.qEnd);
+const gapLeft = () => Math.max(1, Math.ceil((Q.qEnd + GAP - db.now()) / 1000));
+const lastInRound = () => { const r = rounds()[roundOf(Q.qi)]; return !r || Q.qi >= r.start + r.count - 1; };
 function tLbl() {
-  if (!Q.time) return "⏱ bez limitu";
+  if (inGap()) return "⌛ čas vypršel";
+  if (!Q.qEnd) return "⏱ bez limitu";
   const s = timeLeft() ?? 0, m = Math.floor(s / 60), x = s % 60;
   return "⏱ " + (m ? m + ":" + String(x).padStart(2, "0") : x + " s");
 }
@@ -97,6 +116,7 @@ function onQuiz() {
     store.set("player", null); L.tid = null; L.view = "player-join"; L.err = "Pořadatel tvůj tým odpojil. Můžete se přihlásit znovu.";
   }
   if (Q.state !== "final") { L.sel = null; L.statP = null; }
+  if (Q.state !== "question") advancing = null;
   if (Q.qi !== L.lastQi) { L.lastQi = Q.qi; L.ansDraft = ""; L.ansErr = ""; }
 }
 async function newCode() {
@@ -110,24 +130,37 @@ async function newCode() {
 /* ---------- pořadatel: akce ---------- */
 async function createQuiz() {
   const code = await newCode(), pin = String(Math.floor(1000 + Math.random() * 9000));
-  await db.set("quizzes/" + code, { name: quizName, pin, time: TIME, createdAt: db.now(), questions: [...QUESTIONS, ...extra], state: "lobby", qi: -1 });
+  const { qs, rounds: rs } = buildQuiz();
+  await db.set("quizzes/" + code, { name: quizName, pin, time: TIME, createdAt: db.now(), questions: qs.map(({ ei, ...q }) => q), rounds: rs, state: "lobby", qi: -1, ri: -1 });
   L.isHost = true; store.set("host", code); L.view = "host"; watch(code);
 }
-async function nextQuestion() {
-  const qi = Q.qi + 1;
-  await db.update("quizzes/" + L.code, { state: "question", qi, qStart: db.now() });
-}
-async function reveal() {
-  if (!Q || Q.state !== "question") return;
-  const q = questions()[Q.qi], an = answersOf(Q.qi), res = {};
+const qTimes = () => { const n = db.now(); return { qStart: n, qEnd: Q.time ? n + Q.time * 1000 : null }; };
+const toIntro = ri => db.update("quizzes/" + L.code, { state: "intro", ri });
+const startRound = () => db.update("quizzes/" + L.code, { state: "question", qi: rounds()[Q.ri].start, ...qTimes() });
+const endQuestion = () => db.update("quizzes/" + L.code, { qEnd: db.now() });
+let advancing = null;
+async function advance() {
+  if (!Q || Q.state !== "question" || advancing === Q.qi) return;
+  const qi = Q.qi; advancing = qi;
+  const q = questions()[qi], an = answersOf(qi), res = {};
   teams().forEach(([id]) => { res[id] = ptsFor(q, an[id] ? an[id].a : null); });
-  await db.update("quizzes/" + L.code, { ["results/" + qk(Q.qi)]: res, state: "reveal" });
+  const upd = { ["results/" + qk(qi)]: res };
+  if (lastInRound()) upd.state = "roundEnd"; else Object.assign(upd, { qi: qi + 1, ...qTimes() });
+  try { await db.update("quizzes/" + L.code, upd); } catch { advancing = null; }
 }
+let wake = null;
+async function keepAwake(on) {
+  try {
+    if (on && !wake && navigator.wakeLock) { wake = await navigator.wakeLock.request("screen"); wake.addEventListener("release", () => { wake = null; }); }
+    if (!on && wake) { await wake.release(); wake = null; }
+  } catch {}
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && L.isHost && L.view === "host") keepAwake(true); });
 
 /* ---------- hráč: akce ---------- */
 async function answer(a) {
   if (!Q || Q.state !== "question" || answersOf(Q.qi)[L.tid]) return;
-  if (Q.time && timeLeft() <= 0) return;
+  if (Q.qEnd && db.now() >= Q.qEnd) return;
   const t = Math.round((db.now() - Q.qStart) / 100) / 10;
   await db.set(`quizzes/${L.code}/answers/${qk(Q.qi)}/${L.tid}`, { a, t: Math.max(0, t) });
 }
@@ -183,13 +216,14 @@ function homeView() {
 }
 
 function hostCreateView() {
-  const qs = [...QUESTIONS, ...extra];
+  const { qs, rounds: rs } = buildQuiz();
   return bar("🎄 Nový kvíz") + `<div class="body">
   <div><label>Název kvízu</label><input id="qn" value="${esc(quizName)}"></div>
-  <div class="card"><label>Otázky v kvízu (${qs.length})</label>
-   <div class="qlist">${qs.map((q, i) => `<div class="qli"><b>${i + 1}.</b><span>${esc(q.q)}<small>${esc(q.cat)}${q.img ? " · 🖼️" : ""}${q.audio ? " · 🎵" : ""} · ${TLBL[qT(q)]}${q.mine ? " · přidaná" : " · připravená"}</small></span>${q.mine ? `<button class="mini warn" data-delq="${i - QUESTIONS.length}">Smazat</button>` : ""}</div>`).join("")}</div>
+  <div class="card"><label>Okruhy a otázky (${rs.length} okruhy, ${qs.length} otázek)</label>
+   <div class="qlist">${rs.map((r, ri) => `<div class="rhead">Okruh ${ri + 1}: ${esc(r.name)} <small>· ${r.count} ${r.count === 1 ? "otázka" : r.count < 5 ? "otázky" : "otázek"}</small></div>` + qs.slice(r.start, r.start + r.count).map((q, k) => `<div class="qli"><b>${k + 1}.</b><span>${esc(q.q)}<small>${esc(q.cat)}${q.img ? " · 🖼️" : ""}${q.audio ? " · 🎵" : ""} · ${TLBL[qT(q)]}${q.mine ? " · přidaná" : " · připravená"}</small></span>${q.mine ? `<button class="mini warn" data-delq="${q.ei}">Smazat</button>` : ""}</div>`).join("")).join("")}</div>
    <button class="btn sec" id="addQ" style="margin-top:10px">＋ Přidat otázku</button></div>
   <div><label>Čas na odpověď</label><select id="tsel">${TIMES.map(([v, l]) => `<option value="${v}" ${TIME === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+  <div class="card muted">Otázky v okruhu běží samy: každá trvá celý čas a 3 s po jeho konci naskočí další. Správné odpovědi se ukážou až na konci okruhu.</div>
   <div class="card muted">Bodování: správně = 1 bod (číslo přesně 2 body, v toleranci 1 bod). Špatně = 0, nic se neodečítá. Při shodě bodů rozhoduje součet časů správných odpovědí.</div>
   </div><div class="foot"><button class="btn" id="create">Založit kvíz a ukázat QR 🎁</button></div>`;
 }
@@ -197,7 +231,9 @@ function hostCreateView() {
 function addqView() {
   const d = L.draft;
   return bar("＋ Nová otázka", "", "host-create") + `<div class="body">
-  <div><label>Kategorie</label><input id="dCat" value="${esc(d.cat)}" placeholder="např. 🎄 Vánoce"></div>
+  <div><label>Okruh</label><select id="dRound">${buildQuiz().rounds.map(r => `<option ${d.round === r.name ? "selected" : ""}>${esc(r.name)}</option>`).join("")}<option value="__new" ${d.round === "__new" ? "selected" : ""}>＋ Nový okruh…</option></select>
+   ${d.round === "__new" ? `<input id="dNewR" value="${esc(d.newR)}" placeholder="Název nového okruhu" style="margin-top:6px">` : ""}</div>
+  <div><label>Kategorie (štítek u otázky)</label><input id="dCat" value="${esc(d.cat)}" placeholder="např. 🎄 Vánoce"></div>
   <div class="g2"><label class="att">${d.qimg ? `<img src="${d.qimg}">` : "🖼️"}<span>${d.qimg ? "Obrázek přidán" : "Přidat obrázek k otázce"}</span><input type="file" accept="image/*" data-dqf="qimg" hidden></label>
    <label class="att">${d.audio ? "🎵" : "🎤"}<span>${d.audio ? "Nahrávka přidána" : "Přidat nahrávku (písnička, film)"}</span><input type="file" accept="audio/*" data-dqf="audio" hidden></label></div>
   ${d.qimg || d.audio ? `<div class="row" style="gap:6px">${d.audio ? '<button class="mini" data-play="draft">▶ Přehrát</button>' : ""}${d.qimg ? '<button class="mini warn" data-rmq="qimg">Odebrat obrázek</button>' : ""}${d.audio ? '<button class="mini warn" data-rmq="audio">Odebrat nahrávku</button>' : ""}</div>` : ""}
@@ -232,40 +268,69 @@ function statsHtml(id) {
 }
 const lbRow = (r, i) => `<div class="row ${r.id === L.tid ? "me" : ""}"><b>${i + 1}.</b><span>${esc(r.name)}</span><span class="sc">${r.s} b.<small>⏱ ${fT(r.t)}</small></span></div>`;
 
+const plural = n => n === 1 ? "otázka" : n > 1 && n < 5 ? "otázky" : "otázek";
+const tName = v => (TIMES.find(([x]) => x === v) || [0, "bez limitu"])[1];
+function introHtml(who) {
+  const rs = rounds(), r = rs[Q.ri];
+  return `<div class="intro"><div class="rk">Okruh ${Q.ri + 1} z ${rs.length}</div><div class="rn">${esc(r.name)}</div>
+    <b>${r.count} ${plural(r.count)}</b><div class="muted">Čas na otázku: ${tName(Q.time)}</div>
+    ${who === "host" ? `<div class="muted" style="margin-top:10px">Otázky pak poběží samy. Správné odpovědi se ukážou na konci okruhu.</div>` : `<p class="muted" style="margin-top:10px">Čekáme, až pořadatel okruh spustí… 🔔</p>`}</div>`;
+}
+function gapHtml() {
+  return `<div class="card gap"><b style="font-size:20px">⌛ Čas vypršel</b><div class="muted" style="margin:6px 0">${lastInRound() ? "Konec okruhu za" : "Další otázka za"}</div><div class="n">${gapLeft()}</div></div>`;
+}
+// souhrn okruhu: pro tým (id) nebo pro pořadatele (id = null)
+function roundSummary(id) {
+  const r = rounds()[Q.ri], qs = questions();
+  return qs.slice(r.start, r.start + r.count).map((q, k) => {
+    const i = r.start + k, an = answersOf(i), res = resultsOf(i) || {};
+    if (id) {
+      const x = an[id], p = res[id] || 0;
+      return `<div class="card rq ${p > 0 ? "g" : "r"}"><div class="muted">Otázka ${k + 1}</div><div class="qq">${esc(q.q)}</div>
+        <div class="kv"><span>Vaše odpověď</span><b>${esc(ansTxt(q, x ? x.a : null))}</b></div>
+        <div class="kv"><span>Správně</span><b>${esc(okTxt(q))}${qT(q) === "num" ? ` (±${q.tol})` : ""}</b></div>
+        <div class="kv"><span>Body</span><b>${p > 0 ? "✅ " : "❌ "}${p}</b></div></div>`;
+    }
+    const rows = teams().map(([tid, t]) => ({ tid, name: t.name, a: an[tid] ? an[tid].a : null, p: res[tid] || 0 }));
+    if (qT(q) === "num") rows.sort((x, y) => (x.a == null) - (y.a == null) || Math.abs(x.a - q.num) - Math.abs(y.a - q.num));
+    return `<div class="card rq"><div class="muted">Otázka ${k + 1}</div><div class="qq">${esc(q.q)}</div>
+      <div class="kv"><span>Správně</span><b>${esc(okTxt(q))}${qT(q) === "num" ? ` (±${q.tol})` : ""}</b></div>
+      ${qT(q) === "text" ? '<div class="muted" style="font-size:12px">Ťuknutím na body můžeš odpověď uznat nebo neuznat.</div>' : ""}
+      <div class="list">${rows.map(x => `<div class="row"><span style="flex:1">${esc(x.name)}: <b>${esc(ansTxt(q, x.a))}</b></span>${qT(q) === "text" && x.a != null ? `<button class="mini ${x.p ? "okp" : ""}" data-tog="${i}:${x.tid}">${x.p ? "✓ 1 bod" : "✗ 0"}</button>` : `<span class="ptb pt${x.p}">${x.p} b.</span>`}</div>`).join("") || '<span class="muted">Žádné týmy.</span>'}</div></div>`;
+  }).join("");
+}
+
 function hostView() {
   if (!Q) return bar("Načítám…") + `<div class="body"><div class="center muted">Připojuji se ke kvízu…</div></div>`;
-  const qs = questions(), q = qs[Q.qi], n = teams().length, last = Q.qi === qs.length - 1;
+  const qs = questions(), rs = rounds(), q = qs[Q.qi], n = teams().length;
   switch (Q.state) {
     case "lobby": return bar(esc(Q.name), "čekárna") + `<div class="body">
       <div class="center muted">Naskenujte QR kód foťákem</div><div class="qrbox">${qrSvg(joinUrl())}</div>
       <div class="center muted">nebo otevřete ${esc((db.mode === "local" ? "" : PLAYER_URL.replace(/^https?:\/\//, "")))} a zadejte kód</div><div class="code">${esc(L.code)}</div>
       <div class="pinrow">PIN pořadatele: <b>${L.pinShow ? esc(Q.pin) : "••••"}</b><button class="mini" id="pinT">${L.pinShow ? "Skrýt" : "Ukázat"}</button></div>
       <div class="card"><b>Přihlášené týmy: ${n}</b><div style="margin-top:6px">${teams().map(([id, t]) => `<div class="dev"><span>👥 ${esc(t.name)}<small class="mem">${esc((t.members || []).join(", "))}</small></span>${L.unpair === id ? `<button class="mini warn" data-un="${id}">Opravdu odpojit?</button>` : `<span class="pill">Připojeno</span><button class="mini" data-ask="${id}">Odpojit</button>`}</div>`).join("") || '<span class="muted">zatím nikdo…</span>'}</div></div>
-      </div><div class="foot"><button class="btn" id="next" ${n ? "" : "disabled"}>Spustit 1. otázku ▶</button></div>`;
+      <div class="card muted">${rs.length} okruhy · ${qs.length} otázek · ${tName(Q.time)} na otázku</div>
+      </div><div class="foot"><button class="btn" id="toIntro" ${n ? "" : "disabled"}>Přejít na 1. okruh ▶</button></div>`;
+    case "intro": return bar(`Okruh ${Q.ri + 1}/${rs.length}`, esc(Q.name)) + `<div class="body">${introHtml("host")}</div>
+      <div class="foot"><button class="btn" id="startR">Spustit okruh ▶</button></div>`;
     case "question": {
-      const an = answersOf(Q.qi), c = teams().filter(([id]) => an[id]).length;
-      return bar(`Otázka ${Q.qi + 1}/${qs.length}`, tLbl()) + `<div class="body">
+      const an = answersOf(Q.qi), c = teams().filter(([id]) => an[id]).length, r = rs[roundOf(Q.qi)], k = Q.qi - r.start;
+      if (inGap()) return bar(`${esc(r.name)} · ${k + 1}/${r.count}`, tLbl()) + `<div class="body" style="justify-content:center">${gapHtml()}<div class="card center"><div class="big">${c}/${n}</div><div class="muted">týmů odpovědělo</div></div></div>`;
+      return bar(`${esc(r.name)} · ${k + 1}/${r.count}`, tLbl()) + `<div class="body">
       <span class="cat">${esc(q.cat)}</span><div class="q">${esc(q.q)}</div>${media(q, "host")}
       <div class="timer"><i style="width:${Q.time ? (timeLeft() / Q.time) * 100 : 100}%"></i></div>
       ${qT(q) === "abcd" ? `<div class="list">${q.a.map((a, i) => `<div class="row"><span class="tag ${LET[i]}">${SYMS[i]}</span>${aThumb(a)}</div>`).join("")}</div>`
-        : qT(q) === "text" ? `<div class="card">✍️ <b>Týmy píšou vlastní odpověď.</b><div class="muted">Uznává se: ${esc(q.acc.join(", "))}. Za správnou 1 bod.</div></div>`
-        : `<div class="card">🔢 <b>Týmy hádají číslo.</b><div class="muted">Správně: ${q.num}. Přesně = 2 body, v toleranci ±${q.tol} = 1 bod.</div></div>`}
+        : qT(q) === "text" ? `<div class="card">✍️ <b>Týmy píšou vlastní odpověď.</b></div>`
+        : `<div class="card">🔢 <b>Týmy hádají číslo.</b><div class="muted">Přesně = 2 body, v toleranci ±${q.tol} = 1 bod.</div></div>`}
       <div class="card center"><div class="big">${c}/${n}</div><div class="muted">týmů odpovědělo</div></div>
-      </div><div class="foot"><button class="btn sec" id="rev">Ukončit a ukázat odpověď</button></div>`;
+      </div><div class="foot">${Q.qEnd ? `<div class="muted center">Další otázka naskočí sama 3 s po konci času.</div>` : `<button class="btn sec" id="endQ">Ukončit otázku</button>`}</div>`;
     }
-    case "reveal": {
-      const an = answersOf(Q.qi), res = resultsOf(Q.qi) || {}, cnt = [0, 0, 0, 0];
-      if (qT(q) === "abcd") teams().forEach(([id]) => { if (an[id]) cnt[an[id].a]++; });
-      const mx = Math.max(1, ...cnt);
-      const rows = teams().filter(([id]) => an[id]).map(([id, t]) => ({ id, name: t.name, a: an[id].a, p: res[id] || 0 }));
-      if (qT(q) === "num") rows.sort((x, y) => Math.abs(x.a - q.num) - Math.abs(y.a - q.num));
-      return bar(`Otázka ${Q.qi + 1}/${qs.length}`, "výsledek") + `<div class="body">
-      <div class="q">${esc(q.q)}</div>
-      ${qT(q) === "abcd" ? `<div class="list">${q.a.map((a, i) => `<div class="row" style="${i === q.ok ? "font-weight:700" : ""}"><span class="tag ${LET[i]}">${SYMS[i]}</span><span style="width:130px;display:flex;align-items:center;gap:6px">${aThumb(a)}${i === q.ok ? " ✅" : ""}</span><span class="barw"><i class="${LET[i]}" style="width:${cnt[i] / mx * 100}%"></i></span><b>${cnt[i]}</b></div>`).join("")}</div>`
-        : `<div class="card"><b>Správně: ${esc(okTxt(q))}${qT(q) === "num" ? ` (±${q.tol})` : ""}</b>${qT(q) === "text" ? '<div class="muted">Ťuknutím na body můžeš odpověď uznat nebo neuznat.</div>' : ""}
-        <div class="list">${rows.map(r => `<div class="row"><span style="flex:1">${esc(r.name)}: <b>${esc(r.a)}</b></span>${qT(q) === "text" ? `<button class="mini ${r.p ? "okp" : ""}" data-tog="${r.id}">${r.p ? "✓ 1 bod" : "✗ 0"}</button>` : `<span class="ptb pt${r.p}">${r.p} b.</span>`}</div>`).join("") || '<span class="muted">Nikdo neodpověděl.</span>'}</div></div>`}
-      <div class="card lb"><b>Průběžné pořadí</b>${ranking().slice(0, 8).map(lbRow).join("")}</div>
-      </div><div class="foot"><button class="btn" id="${last ? "fin" : "next"}">${last ? "Vyhlásit vítěze 🏆" : "Další otázka ▶"}</button></div>`;
+    case "roundEnd": {
+      const r = rs[Q.ri], last = Q.ri >= rs.length - 1;
+      return bar(`Konec okruhu ${Q.ri + 1}/${rs.length}`, esc(r.name)) + `<div class="body">
+      <div class="card lb"><b>📊 Průběžné pořadí</b>${ranking().map(lbRow).join("")}</div>
+      <div class="center"><b style="font-size:18px">✅ Správné odpovědi okruhu</b></div>${roundSummary(null)}
+      </div><div class="foot"><button class="btn" id="${last ? "fin" : "toNext"}">${last ? "Vyhlásit vítěze 🏆" : `Další okruh: ${esc(rs[Q.ri + 1].name)} ▶`}</button></div>`;
     }
     case "final": {
       const r = ranking(), sp = L.statP && Q.teams[L.statP];
@@ -306,31 +371,33 @@ function playerView() {
   if (!Q) return bar("Načítám…") + `<div class="body"><div class="center muted">Připojuji se ke kvízu…</div></div>`;
   const me = Q.teams && Q.teams[L.tid];
   if (!me) { L.view = "player-join"; return playerJoinView(); }
-  const qs = questions(), q = qs[Q.qi], my = q ? answersOf(Q.qi)[L.tid] : null, r = ranking(), pos = r.findIndex(x => x.id === L.tid) + 1;
+  const qs = questions(), rs = rounds(), q = qs[Q.qi], my = q ? answersOf(Q.qi)[L.tid] : null, r = ranking(), pos = r.findIndex(x => x.id === L.tid) + 1;
   switch (Q.state) {
     case "lobby": return `<div class="snow"></div>` + bar(esc(Q.name), esc(me.name)) + `<div class="body" style="justify-content:center;text-align:center">
       <div class="big">⛄</div><b>Tým ${esc(me.name)} je ve hře!</b><div class="muted">${esc((me.members || []).join(", "))}</div>
-      <p class="muted">Čekáme, až pořadatel spustí první otázku…<br>Přihlášených týmů: ${teams().length}</p><span class="pill" style="align-self:center">● ${online ? "Online" : "Bez připojení…"} · ${esc(L.code)}</span></div>`;
+      <p class="muted">Čekáme, až pořadatel spustí kvíz…<br>Přihlášených týmů: ${teams().length}</p><span class="pill" style="align-self:center">● ${online ? "Online" : "Bez připojení…"} · ${esc(L.code)}</span></div>`;
+    case "intro": return `<div class="snow"></div>` + bar(`Okruh ${Q.ri + 1}/${rs.length}`, esc(me.name)) + `<div class="body">${introHtml("player")}</div>`;
     case "question": {
-      if (my) return bar(`Otázka ${Q.qi + 1}/${qs.length}`, tLbl()) + `<div class="body" style="justify-content:center;text-align:center">
+      const rr = rs[roundOf(Q.qi)], k = Q.qi - rr.start, head = bar(`${esc(rr.name)} · ${k + 1}/${rr.count}`, tLbl());
+      if (inGap()) return head + `<div class="body" style="justify-content:center">${gapHtml()}${my ? `<p class="center muted">Odpověď máte odeslanou. Jestli byla správně, uvidíte na konci okruhu.</p>` : `<p class="center muted">Na tuhle otázku jste neodpověděli.</p>`}</div>`;
+      if (my) return head + `<div class="body" style="justify-content:center;text-align:center">
+        <div class="timer"><i style="width:${Q.time ? (timeLeft() / Q.time) * 100 : 100}%"></i></div>
         ${qT(q) === "abcd" ? `<div class="ans ${LET[my.a]}" style="min-height:120px"><span class="s">${SYMS[my.a]}</span>${esc(aTxt(q.a[my.a]))}</div>` : `<div class="card"><div class="muted">Vaše odpověď</div><div class="big" style="font-size:32px">${esc(my.a)}</div></div>`}
-        <b>Odpověď odeslána za ${fT(my.t)}</b><p class="muted">Počkejte na vyhodnocení… 🔔</p></div>`;
-      const over = Q.time && timeLeft() <= 0;
-      return bar(`Otázka ${Q.qi + 1}/${qs.length}`, tLbl()) + `<div class="body">
+        <b>Odpověď odeslána ✉️</b><p class="muted">Další otázka přijde, až vyprší čas.<br>Správnost uvidíte na konci okruhu.</p></div>`;
+      return head + `<div class="body">
       <span class="cat">${esc(q.cat)}</span><div class="q">${esc(q.q)}</div>${media(q, "player")}<div class="timer"><i style="width:${Q.time ? (timeLeft() / Q.time) * 100 : 100}%"></i></div>
-      ${over ? `<div class="card center"><b>⌛ Čas vypršel</b></div>`
-        : qT(q) === "abcd" ? `<div class="answers">${q.a.map((a, i) => `<button class="ans ${LET[i]}${a.img ? " pic" : ""}" data-a="${i}">${a.img ? `<img src="${esc(a.img)}" alt="${esc(a.t)}"><span class="cap"><span>${SYMS[i]}</span> ${esc(a.t)}</span>` : `<span class="s">${SYMS[i]}</span>${esc(a)}`}</button>`).join("")}</div>`
+      ${qT(q) === "abcd" ? `<div class="answers">${q.a.map((a, i) => `<button class="ans ${LET[i]}${a.img ? " pic" : ""}" data-a="${i}">${a.img ? `<img src="${esc(a.img)}" alt="${esc(a.t)}"><span class="cap"><span>${SYMS[i]}</span> ${esc(a.t)}</span>` : `<span class="s">${SYMS[i]}</span>${esc(a)}`}</button>`).join("")}</div>`
         : `<div class="card"><label>${qT(q) === "text" ? "Vaše odpověď" : "Váš odhad"}</label><input id="ansIn" ${qT(q) === "num" ? 'type="number" inputmode="numeric" placeholder="např. 1990"' : 'placeholder="Napište odpověď…" autocomplete="off"'} value="${esc(L.ansDraft || "")}" style="font-size:20px">
           <div class="muted" style="margin-top:6px">${qT(q) === "num" ? `Přesně = 2 body · o ±${q.tol} vedle = 1 bod` : "Na velikosti písmen a háčcích nezáleží."}</div><div class="err">${esc(L.ansErr || "")}</div></div>
           <button class="btn" id="ansSend">Odeslat odpověď 📨</button>`}</div>`;
     }
-    case "reveal": {
-      const pt = (resultsOf(Q.qi) || {})[L.tid] || 0, ok = pt > 0;
-      return bar(`Otázka ${Q.qi + 1}/${qs.length}`) + `<div class="body" style="justify-content:center">
-      <div class="res ${ok ? "good" : "bad"}"><b style="font-size:20px">${pt === 2 ? "Přesně! 🎯" : ok && qT(q) === "num" ? "Skoro! V toleranci 👍" : ok ? "Správně! 🎉" : !my ? "Nestihli jste to ⌛" : "Bohužel špatně ❄️"}</b>
-      <p style="font-size:20px;font-weight:800;margin:6px 0">${pt === 2 ? "+2 body" : pt ? "+1 bod" : "0 bodů"}</p>${my && qT(q) !== "abcd" ? `<p>Vaše odpověď: ${esc(my.a)}</p>` : ""}<p>Správně: ${esc(okTxt(q))}</p>${qT(q) === "abcd" && q.a[q.ok].img ? `<img src="${esc(q.a[q.ok].img)}" style="width:120px;border-radius:10px;border:3px solid #fff" alt="">` : ""}</div>
-      <div class="card center"><div class="muted">Celkem bodů</div><div class="big">${r[pos - 1]?.s ?? 0}</div><div class="muted">⏱ čas správných odpovědí: ${fT(r[pos - 1]?.t)}</div><b>${pos}. místo z ${r.length}</b></div>
-      <p class="center muted">Další otázka přijde od pořadatele…</p></div>`;
+    case "roundEnd": {
+      const rr = rs[Q.ri], b0 = rr.start, got = qs.slice(b0, b0 + rr.count).reduce((s, x, k) => s + (((resultsOf(b0 + k) || {})[L.tid]) || 0), 0);
+      return bar(`Konec okruhu ${Q.ri + 1}/${rs.length}`, esc(rr.name)) + `<div class="body">
+      <div class="card center"><div class="muted">Za tento okruh</div><div class="big">+${got}</div><div class="muted">Celkem ${r[pos - 1]?.s ?? 0} b. · ⏱ ${fT(r[pos - 1]?.t)}</div><b>${pos}. místo z ${r.length}</b></div>
+      <div class="card lb"><b>📊 Průběžné pořadí</b>${r.map(lbRow).join("")}</div>
+      <div class="center"><b style="font-size:18px">Vaše odpovědi v okruhu</b></div>${roundSummary(L.tid)}
+      <p class="center muted">${Q.ri < rs.length - 1 ? "Další okruh brzy začne…" : "Za chvíli vyhlášení vítězů… 🏆"}</p></div>`;
     }
     case "final": return `<div class="snow"></div>` + bar("🏆 Konec kvízu") + `<div class="body">
       <div class="center"><div class="big" style="margin:0">${pos === 1 ? "🥇" : pos === 2 ? "🥈" : pos === 3 ? "🥉" : "🎄"}</div><b style="font-size:24px">${pos}. místo z ${r.length}</b></div>
@@ -357,12 +424,13 @@ function render() {
   if (key) { const e = document.querySelector(key); if (e) { e.focus(); try { sel && e.setSelectionRange(...sel); } catch {} } }
 }
 setInterval(() => {
-  if (Q && Q.state === "question" && Q.time) {
-    if (L.isHost && L.view === "host" && timeLeft() <= 0) reveal();
+  if (L.isHost && L.view === "host" && Q) keepAwake(true); else if (wake) keepAwake(false);
+  if (Q && Q.state === "question" && Q.qEnd) {
+    if (L.isHost && L.view === "host" && db.now() >= Q.qEnd + GAP) advance();
     const a = document.activeElement;
-    if (!(a && a.id === "ansIn")) render(); else { const b = $(".bar small"); if (b) b.textContent = tLbl(); const t = $(".timer i"); if (t) t.style.width = (timeLeft() / Q.time) * 100 + "%"; }
+    if (!(a && a.id === "ansIn") || inGap()) render(); else { const b = $(".bar small"); if (b) b.textContent = tLbl(); const t = $(".timer i"); if (t && Q.time) t.style.width = (timeLeft() / Q.time) * 100 + "%"; }
   }
-}, 500);
+}, 250);
 
 /* ---------- události ---------- */
 function go(view) { L.err = ""; L.view = view; render(); }
@@ -378,7 +446,8 @@ document.addEventListener("input", e => {
   else if (t.dataset.mem != null) L.team.members[+t.dataset.mem] = t.value;
   else if (t.id === "ansIn") L.ansDraft = t.value;
   else if (L.draft) {
-    if (t.id === "dCat") L.draft.cat = t.value; else if (t.id === "dQ") L.draft.q = t.value;
+    if (t.id === "dNewR") L.draft.newR = t.value;
+    else if (t.id === "dCat") L.draft.cat = t.value; else if (t.id === "dQ") L.draft.q = t.value;
     else if (t.dataset.da != null) L.draft.a[+t.dataset.da] = t.value;
     else if (t.id === "dAcc") L.draft.acc = t.value; else if (t.id === "dNum") L.draft.num = t.value; else if (t.id === "dTol") L.draft.tol = t.value;
   }
@@ -386,6 +455,7 @@ document.addEventListener("input", e => {
 document.addEventListener("change", async e => {
   const t = e.target;
   if (t.id === "tsel") { TIME = +t.value; store.set("time", TIME); return; }
+  if (t.id === "dRound") { L.draft.round = t.value; return render(); }
   const f = t.files && t.files[0]; if (!f) return;
   try {
     if (t.dataset.dqf === "qimg") L.draft.qimg = await readImage(f);
@@ -420,16 +490,17 @@ document.addEventListener("click", async e => {
   if (id === "resumePlay") { const p = store.get("player"); L.isHost = false; L.tid = p.tid; L.view = "player"; watch(p.code); return render(); }
 
   // pořadatel: příprava
-  if (id === "addQ") { L.draft = { type: "abcd", cat: "", q: "", a: ["", "", "", ""], img: [null, null, null, null], ok: null, acc: "", num: "", tol: "2", qimg: null, audio: null }; L.dErr = ""; return go("host-addq"); }
+  if (id === "addQ") { L.draft = { round: (buildQuiz().rounds[0] || { name: "__new" }).name, newR: "", type: "abcd", cat: "", q: "", a: ["", "", "", ""], img: [null, null, null, null], ok: null, acc: "", num: "", tol: "2", qimg: null, audio: null }; L.dErr = ""; return go("host-addq"); }
   if (ds.delq != null) { extra.splice(+ds.delq, 1); store.set("extra", extra); return render(); }
   if (ds.dt) { L.draft.type = ds.dt; L.dErr = ""; return render(); }
   if (ds.dok != null) { L.draft.ok = +ds.dok; return render(); }
   if (ds.rmq) { L.draft[ds.rmq] = null; return render(); }
   if (id === "saveQ") {
-    const d = L.draft, base = { mine: true, cat: d.cat.trim() || "⭐ Vlastní", q: d.q.trim() };
+    const d = L.draft, rn = d.round === "__new" ? d.newR.trim() : d.round, base = { mine: true, round: rn, cat: d.cat.trim() || "⭐ Vlastní", q: d.q.trim() };
     if (d.qimg) base.img = d.qimg; if (d.audio) base.audio = d.audio;
     let nq = null;
-    if (!base.q) L.dErr = "Napiš otázku.";
+    if (!rn) L.dErr = "Napiš název nového okruhu.";
+    else if (!base.q) L.dErr = "Napiš otázku.";
     else if (d.type === "abcd") {
       if (d.a.some((a, i) => !a.trim() && !d.img[i])) L.dErr = "Vyplň všechny 4 odpovědi (text nebo fotku).";
       else if (d.ok == null) L.dErr = "Označ správnou odpověď (✓).";
@@ -449,10 +520,12 @@ document.addEventListener("click", async e => {
   if (id === "pinT") { L.pinShow = !L.pinShow; return render(); }
   if (ds.ask) { L.unpair = ds.ask; return render(); }
   if (ds.un) { L.unpair = null; await db.set(`quizzes/${L.code}/teams/${ds.un}/kicked`, true); return; }
-  if (id === "next") { t.disabled = true; return nextQuestion(); }
-  if (id === "rev") { t.disabled = true; return reveal(); }
+  if (id === "toIntro") { t.disabled = true; return toIntro(0); }
+  if (id === "toNext") { t.disabled = true; return toIntro(Q.ri + 1); }
+  if (id === "startR") { t.disabled = true; return startRound(); }
+  if (id === "endQ") { t.disabled = true; return endQuestion(); }
   if (id === "fin") return db.update("quizzes/" + L.code, { state: "final" });
-  if (ds.tog) { const cur = (resultsOf(Q.qi) || {})[ds.tog] || 0; return db.set(`quizzes/${L.code}/results/${qk(Q.qi)}/${ds.tog}`, cur ? 0 : 1); }
+  if (ds.tog) { const [qi, tid] = ds.tog.split(":"), cur = (resultsOf(+qi) || {})[tid] || 0; return db.set(`quizzes/${L.code}/results/${qk(+qi)}/${tid}`, cur ? 0 : 1); }
   if (id === "statBack") { L.statP = null; L.sel = null; return render(); }
   if (ds.qn != null) { L.sel = L.sel === +ds.qn ? null : +ds.qn; return render(); }
   if (id === "endQuiz") { store.set("host", null); leaveQuiz(); return go("home"); }

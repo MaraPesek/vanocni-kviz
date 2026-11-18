@@ -55,5 +55,6 @@ async function firebaseDb() {
 }
 
 export async function openDb() {
-  return firebaseConfig ? firebaseDb() : localDb();
+  // Na adrese 127.0.0.1 (zkoušení na počítači) běží vždy místní režim bez internetu.
+  return firebaseConfig && location.hostname !== "127.0.0.1" ? firebaseDb() : localDb();
 }

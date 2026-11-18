@@ -120,3 +120,14 @@ img.th{width:36px;height:27px;object-fit:cover;border-radius:5px;margin-right:6p
 .bar{padding-top:max(14px,env(safe-area-inset-top))}
 .foot{padding-bottom:max(16px,env(safe-area-inset-bottom))}
 .toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#1b1b1b;color:#fff;padding:12px 18px;border-radius:12px;font-weight:700;z-index:99;max-width:90vw;text-align:center;box-shadow:0 6px 20px rgba(0,0,0,.35)}
+.qlist{max-height:340px}
+.rhead{font-weight:900;color:var(--red);margin-top:10px;padding-bottom:4px;border-bottom:2px solid #f3d6d6}
+.rhead small{color:var(--muted);font-weight:700}
+.intro{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:6px}
+.intro .rn{font-family:"Mountains of Christmas",cursive;font-size:40px;color:var(--red);line-height:1.1}
+.intro .rk{font-weight:800;color:var(--green);letter-spacing:.08em;text-transform:uppercase;font-size:13px}
+.gap{text-align:center;padding:26px 12px}
+.gap .n{font-size:64px;font-weight:900;color:var(--red);line-height:1}
+.rq{border-left:6px solid #ccc}
+.rq.g{border-left-color:var(--green)}.rq.r{border-left-color:var(--red)}
+.rq .qq{font-weight:800;margin:2px 0 6px}
